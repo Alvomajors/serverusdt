@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Mock Exchange</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background:#0b0e11; color:#eaecef; margin:0; padding:16px; }
+  h1 { font-size:18px; color:#f0b90b; margin:0 0 12px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; }
+  .card { background:#1e2329; border-radius:8px; padding:12px; }
+  .card h2 { font-size:13px; margin:0 0 8px; color:#848e9c; text-transform:uppercase; letter-spacing:.5px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric: tabular-nums; }
+  th,td { text-align:right; padding:3px 4px; }
+  th { color:#848e9c; font-weight:500; }
+  .bid { color:#0ecb81; }
+  .ask { color:#f6465d; }
+  input,select,button { background:#2b3139; border:1px solid #2b3139; color:#eaecef; border-radius:4px; padding:6px 8px; font-size:13px; width:100%; box-sizing:border-box; margin-bottom:6px; }
+  button { background:#f0b90b; color:#0b0e11; font-weight:600; cursor:pointer; border:none; padding:8px; }
+  button.sell { background:#f6465d; color:#fff; }
+  button:hover { filter:brightness(1.1); }
+  .row { display:flex; gap:6px; }
+  .bal { font-size:12px; color:#848e9c; margin-bottom:8px; }
+  .bal span { color:#eaecef; margin-right:10px; }
+  .trades td { font-size:11px; }
+</style>
+</head>
+<body>
+<h1>⚡ Mock Exchange</h1>
+
+<div class="card" style="margin-bottom:12px">
+  <div class="bal" id="balances">Loading balances…</div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Order Book</h2>
+    <table>
+      <thead><tr><th>Price</th><th>Qty</th></tr></thead>
+      <tbody id="asks"></tbody>
+    </table>
+    <div style="text-align:center;color:#848e9c;font-size:11px;padding:4px 0" id="spread">—</div>
+    <table>
+      <tbody id="bids"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Place Order</h2>
+    <input id="user" placeholder="user id" value="alice" />
+    <select id="symbol"></select>
+    <div class="row">
+      <select id="type">
+        <option value="limit">Limit</option>
+        <option value="market">Market</option>
+      </select>
+      <input id="price" placeholder="price" type="number" step="0.01" value="50000" />
+    </div>
+    <input id="qty" placeholder="quantity" type="number" step="0.0001" value="0.01" />
+    <div class="row">
+      <button onclick="submitOrder('buy')">Buy</button>
+      <button class="sell" onclick="submitOrder('sell')">Sell</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Recent Trades</h2>
+    <table class="trades">
+      <thead><tr><th>Price</th><th>Qty</th><th>Side</th></tr></thead>
+      <tbody id="trades"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const symbols = [];
+let currentSymbol = "BTC/USDT";
+
+async function loadSymbols() {
+  const r = await fetch("/api/symbols");
+  const d = await r.json();
+  symbols.push(...d.symbols);
+  const sel = document.getElementById("symbol");
+  sel.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join("");
+  sel.value = currentSymbol;
+  sel.onchange = () => { currentSymbol = sel.value; refresh(); };
+}
+
+async function loadBalances() {
+  const user = document.getElementById("user").value || "alice";
+  const r = await fetch(`/api/balance/${user}`);
+  const d = await r.json();
+  document.getElementById("balances").innerHTML =
+    Object.entries(d).map(([k,v]) => `<span>${k}: ${v.toFixed(4)}</span>`).join("");
+}
+
+async function refresh() {
+  await Promise.all([loadDepth(), loadTrades(), loadBalances()]);
+}
+
+async function loadDepth() {
+  const r = await fetch(`/api/depth/${encodeURIComponent(currentSymbol)}?levels=10`);
+  const d = await r.json();
+  const asks = [...d.asks].reverse();
+  document.getElementById("asks").innerHTML = asks.map(a =>
+    `<tr><td class="ask">${a.price.toFixed(2)}</td><td>${a.quantity.toFixed(4)}</td></tr>`).join("");
+  document.getElementById("bids").innerHTML = d.bids.map(b =>
+    `<tr><td class="bid">${b.price.toFixed(2)}</td><td>${b.quantity.toFixed(4)}</td></tr>`).join("");
+  const bestBid = d.bids[0]?.price;
+  const bestAsk = d.asks[0]?.price;
+  document.getElementById("spread").textContent =
+    (bestBid && bestAsk) ? `spread ${(bestAsk - bestBid).toFixed(2)}` : "—";
+}
+
+async function loadTrades() {
+  const r = await fetch(`/api/trades/${encodeURIComponent(currentSymbol)}?limit=20`);
+  const d = await r.json();
+  document.getElementById("trades").innerHTML = d.map(t =>
+    `<tr><td class="${t.taker_side === 'buy' ? 'bid' : 'ask'}">${t.price.toFixed(2)}</td>
+         <td>${t.quantity.toFixed(4)}</td>
+         <td>${t.taker_side}</td></tr>`).join("");
+}
+
+async function submitOrder(side) {
+  const body = {
+    user_id: document.getElementById("user").value || "alice",
+    symbol: currentSymbol,
+    side,
+    order_type: document.getElementById("type").value,
+    quantity: parseFloat(document.getElementById("qty").value),
+    price: parseFloat(document.getElementById("price").value) || 0,
+  };
+  const r = await fetch("/api/order", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  if (!r.ok) { alert(d.detail || "Order failed"); return; }
+  refresh();
+}
+
+// WebSocket for live updates
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "depth" && msg.symbol === currentSymbol) {
+      // re-render depth quickly
+      const d = msg.data;
+      const asks = [...d.asks].reverse();
+      document.getElementById("asks").innerHTML = asks.map(a =>
+        `<tr><td class="ask">${a.price.toFixed(2)}</td><td>${a.quantity.toFixed(4)}</td></tr>`).join("");
+      document.getElementById("bids").innerHTML = d.bids.map(b =>
+        `<tr><td class="bid">${b.price.toFixed(2)}</td><td>${b.quantity.toFixed(4)}</td></tr>`).join("");
+    } else if (msg.type === "trade" && msg.data.symbol === currentSymbol) {
+      loadTrades();
+    }
+  };
+  ws.onclose = () => setTimeout(connectWS, 2000);
+}
+
+(async () => {
+  await loadSymbols();
+  await refresh();
+  connectWS();
+  setInterval(refresh, 5000);
+  document.getElementById("user").addEventListener("change", loadBalances);
+})();
+</script>
+</body>
+</html>
